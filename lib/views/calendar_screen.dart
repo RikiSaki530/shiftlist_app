@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart'; // ← intlパッケージを入れてね
 import 'date_detail_screen.dart';
 import '../models/schedule_entry.dart';
 import 'add_student_screen.dart';
+import '../models/student_list.dart';
+import '../services/create_pdf.dart';
+import 'package:flutter/material.dart';
+import 'pdf_preview_screen.dart';
 
 
 class CalendarScreen extends StatefulWidget {
@@ -16,6 +19,8 @@ class CalendarScreen extends StatefulWidget {
 
 class _CalendarScreenState extends State<CalendarScreen> {
   int _displayedMonthOffset = 0;
+
+  List<ScheduleEntry> get sampleSchedule => StudentList.instance.sampleSchedule;
 
   @override
   Widget build(BuildContext context) {
@@ -31,17 +36,29 @@ class _CalendarScreenState extends State<CalendarScreen> {
             icon: Icon(Icons.picture_as_pdf),
             tooltip: 'PDFを作成',
             onPressed: () {
-              print('PDF作成');
+              final now = DateTime.now();
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => PdfPreviewScreen(year: now.year, month: now.month),
+                ),
+              );
             },
           ),
           IconButton(
             icon: Icon(Icons.add),
             tooltip: '生徒追加',
             onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (context) => AddStudentScreen()),
-              );
+              showModalBottomSheet<ScheduleEntry>(
+                context: context,
+                isScrollControlled: true,
+                builder: (_) => AddStudentScreen(),
+              ).then((entry) {
+                if (entry != null) {
+                  setState(() {
+                    StudentList.instance.addEntry(entry);
+                  });
+                }
+              });
             },
           ),
         ],
@@ -93,71 +110,6 @@ class _CalendarScreenState extends State<CalendarScreen> {
 
                     final currentDate = DateTime(pageFirstDay.year, pageFirstDay.month, dayNumber);
                     final weekday = CalendarScreen.weekdays[currentDate.weekday % 7];
-                    final List<ScheduleEntry> sampleSchedule = [
-                      // 毎週担当
-                      ScheduleEntry(
-                        studentName: "佐藤花子",
-                        grade: "中2",
-                        weekday: "月", // 毎週月曜
-                        timeshift: "A",
-                        continuous: true,
-                        day: 0, // 毎週の場合は day は無視される
-                        month: 0,
-                        ownerId: "001",
-                      ),
-                      ScheduleEntry(
-                        studentName: "鈴木一郎",
-                        grade: "中2",
-                        weekday: "水",
-                        timeshift: "B",
-                        continuous: true,
-                        day: 0,
-                        month: 0,
-                        ownerId: "001",
-                      ),
-                      ScheduleEntry(
-                        studentName: "高橋美咲",
-                        grade: "中3",
-                        weekday: "金",
-                        timeshift: "A",
-                        continuous: true,
-                        day: 0,
-                        month: 0,
-                        ownerId: "001",
-                      ),
-
-                      // 単発シフト
-                      ScheduleEntry(
-                        studentName: "田中太郎",
-                        grade: "小2",
-                        weekday: "月", // 2025年7月7日が日曜だった場合
-                        timeshift: "B",
-                        continuous: false,
-                        day: 7, // 7月7日
-                        month: 7,
-                        ownerId: "001",
-                      ),
-                      ScheduleEntry(
-                        studentName: "小林優子",
-                        grade: "中3",
-                        weekday: "木",
-                        timeshift: "A",
-                        continuous: false,
-                        day: 17, // 7月17日
-                        month: 7,
-                        ownerId: "001",
-                      ),
-                      ScheduleEntry(
-                        studentName: "佐々木健",
-                        grade: "中1",
-                        weekday: "金",
-                        timeshift: "B",
-                        continuous: false,
-                        day: 25, // 7月25日
-                        month: 7,
-                        ownerId: "001",
-                      ),
-                    ];
 
                     return GestureDetector(
                       onTap: () {

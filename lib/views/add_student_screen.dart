@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/schedule_entry.dart';
+import 'calendar_screen.dart';
 
 class AddStudentScreen extends StatefulWidget {
   @override
@@ -10,13 +11,13 @@ class _AddStudentScreenState extends State<AddStudentScreen> {
   final List<String> grades = ['小1','小2','小3','小4','小5','小6','中1', '中2', '中3', '高1', '高2', '高3'];
   final List<String> weekdays = ['月', '火', '水', '木', '金', '土', '日'];
   final List<String> timeshift = [
+    'A(17:00～18:30)',
+    'B(18:40～20:10)',
+    'C(20:20～21:50)',
     '9:30～11:00',
     '11:10～12:40',
     '13:30～15:00',
     '15:10～16:40',
-    '17:00～18:30',
-    '18:40～20:10',
-    '20:20～21:50',
   ];
   late String selectedGrade;
   late String selectedWeekday;
@@ -25,12 +26,16 @@ class _AddStudentScreenState extends State<AddStudentScreen> {
   final TextEditingController timeshiftController = TextEditingController();
   final TextEditingController noteController = TextEditingController();
 
+  bool isContinuous = true;
+  late DateTime selectedDate;
+
   @override
   void initState() {
     super.initState();
     selectedGrade = grades.first;
     selectedWeekday = weekdays.first;
     selectedtimeshift = timeshift.first;
+    selectedDate = DateTime.now();
   }
 
   void saveEntry() {
@@ -39,12 +44,13 @@ class _AddStudentScreenState extends State<AddStudentScreen> {
       grade: selectedGrade,
       weekday: selectedWeekday,
       timeshift: selectedtimeshift,
-      continuous: true,
-      day: 15,
-      month: 7,
+      continuous: isContinuous,
+      day: isContinuous ? 0 : selectedDate.day,
+      month: isContinuous ? 0 : selectedDate.month,
       ownerId: "user1234",
     );
     // TODO: Implement saving logic for newEntry
+    Navigator.pop(context, newEntry);
   }
 
   @override
@@ -127,6 +133,40 @@ class _AddStudentScreenState extends State<AddStudentScreen> {
             ),
 
             const SizedBox(height: 16),
+
+            // Toggle for single vs weekly
+            SwitchListTile(
+              title: const Text('毎週繰り返す'),
+              value: isContinuous,
+              onChanged: (value) {
+                setState(() {
+                  isContinuous = value;
+                });
+              },
+            ),
+
+            // If single occurrence, show date picker tile
+            if (!isContinuous) ListTile(
+              title: const Text('日付を選択'),
+              subtitle: Text('${selectedDate.year}/${selectedDate.month}/${selectedDate.day}'),
+              trailing: const Icon(Icons.calendar_today),
+              onTap: () async {
+                final picked = await showDatePicker(
+                  context: context,
+                  initialDate: selectedDate,
+                  firstDate: DateTime(2020),
+                  lastDate: DateTime(2030),
+                );
+                if (picked != null) {
+                  setState(() {
+                    selectedDate = picked;
+                    selectedWeekday = weekdays[picked.weekday - 1];
+                  });
+                }
+              },
+            ),
+
+            const SizedBox(height: 16),
             TextFormField(
               controller: noteController,
               decoration: const InputDecoration(
@@ -139,10 +179,7 @@ class _AddStudentScreenState extends State<AddStudentScreen> {
         ),
       ),
       floatingActionButton: FloatingActionButton(
-        onPressed: () {
-          saveEntry();
-          Navigator.pop(context);
-        },
+        onPressed: saveEntry,
         child: const Icon(Icons.save),
       ),
     );
