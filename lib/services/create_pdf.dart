@@ -4,16 +4,44 @@ import 'dart:io';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
+import 'package:shared_preferences/shared_preferences.dart';
+
 import '../models/schedule_entry.dart';
 import '../models/student_list.dart';
+
+// Helper: normalize timeshift slot string (unify wave/dash etc.)
+String _normSlot(String s) => s.replaceAll('〜', '-').replaceAll('～', '-').trim();
 
 class PdfGenerator {
   static int ps1add = 0;
   static int ps2add = 0;
   static double workTimeadd = 0.0;
+  static int syuudannadd = 0;
+  static int mokutatuadd = 0;
+  static int omcadd = 0;
+  static int kousyuuadd = 0;
+  static int officeAdd = 0; // 月次の事務作業回数
+  static double officeHoursAdd = 0.0; // 月次 事務作業時間(h)
 
   // キャッシュ用日本語フォント
   static pw.Font? _jpFont;
+
+  /// コア授業枠（ABC のみ）
+  static const abcSlots = [
+    'A(17:00～18:30)',
+    'B(18:40～20:10)',
+    'C(20:20～21:50)',
+  ];
+  /// すべての時間帯
+  static const fullSlots = [
+    '9:30-11:00',
+    '11:10-12:40',
+    '13:30-15:00',
+    '15:10-16:40',
+    'A(17:00～18:30)',
+    'B(18:40～20:10)',
+    'C(20:20～21:50)',
+  ];
 
   /// 日本語フォントを一度だけ読み込む
   static Future<void> _loadJapaneseFont() async {
@@ -51,6 +79,7 @@ class PdfGenerator {
   // Build a TableRow for a given day. Returns null if no entries.
   static pw.TableRow? _buildDayRow(
     List<ScheduleEntry> entries,
+    List<String> slots,
     int year,
     int month,
     int day,
@@ -63,46 +92,59 @@ class PdfGenerator {
     }
     final weekday = weekdayNames[DateTime(year, month, day).weekday % 7];
 
-    final aCount = entriesForDate.where((e) => e.timeshift == 'A(17:00～18:30)').length;
-    final bCount = entriesForDate.where((e) => e.timeshift == 'B(18:40～20:10)').length;
-    final cCount = entriesForDate.where((e) => e.timeshift == 'C(20:20～21:50)').length;
-
     int ps1 = 0;
     int ps2 = 0;
     double workTime = 0.0;
 
-    if (aCount == 1){
-      ps1 += 1;
-      workTime += 1.5;
-      PdfGenerator.ps1add += 1;
-      PdfGenerator.workTimeadd += 1.5;
-    }else if (aCount == 2){
-      ps2 += 1;
-      workTime += 1.5;
-      PdfGenerator.ps2add += 1;
-      PdfGenerator.workTimeadd += 1.5;
+    // ─── 特別業務カウント ───────────────────────────
+    int syuudann = entriesForDate.where((e) => e.isSpecialWork && e.specialwork == '集団').length;
+    int mokutatu = entriesForDate.where((e) => e.isSpecialWork && e.specialwork == '目達').length;
+    int omc      = entriesForDate.where((e) => e.isSpecialWork && e.specialwork == 'OMC').length;
+    int kousyuu  = entriesForDate.where((e) => e.isSpecialWork && e.specialwork == '講習準備').length;
+
+    // 日次→月次の合計へ加算
+    PdfGenerator.syuudannadd += syuudann;
+    PdfGenerator.mokutatuadd += mokutatu;
+    PdfGenerator.omcadd     += omc;
+    PdfGenerator.kousyuuadd += kousyuu;
+
+    // ---- 特別業務ぶん勤務時間を加算 -------------------
+    final int specialWorkTotal = syuudann + mokutatu + omc + kousyuu;
+    if (specialWorkTotal > 0) {
+      workTime += specialWorkTotal * 1.5;        // 1.5h × 件数
+      PdfGenerator.workTimeadd += specialWorkTotal * 1.5;
     }
-    if (bCount == 1){
-      ps1 += 1;
-      workTime += 1.5;
-      PdfGenerator.ps1add += 1;
-      PdfGenerator.workTimeadd += 1.5;
-    }else if (bCount == 2){
-      ps2 += 1;
-      workTime += 1.5;
-      PdfGenerator.ps2add += 1;
-      PdfGenerator.workTimeadd += 1.5;
-    }
-    if (cCount == 1){
-      ps1 += 1;
-      workTime += 1.5;
-      PdfGenerator.ps1add += 1;
-      PdfGenerator.workTimeadd += 1.5;
-    }else if (cCount == 2){
-      ps2 += 1;
-      workTime += 1.5;
-      PdfGenerator.ps2add += 1;
-      PdfGenerator.workTimeadd += 1.5;
+
+
+    // ─── 事務作業カウント ───
+    final officeCount = entriesForDate.where((e) => e.isOfficeWork).length;
+    PdfGenerator.officeAdd += officeCount;
+    // 事務作業時間合計
+    final double officeHours = entriesForDate
+        .where((e) => e.isOfficeWork)
+        .fold(0.0, (prev, e) => prev + (e.officeworktime));
+    // 日次 → 月次加算
+    PdfGenerator.officeHoursAdd += officeHours;
+    // 勤務時間に加算
+    workTime += officeHours;
+    PdfGenerator.workTimeadd += officeHours;
+
+    // ─── PS1 / PS2 判定 (すべての時間帯)────────────────────
+    for (final slot in slots) {
+      final count = entriesForDate
+          .where((e) => _normSlot(e.timeshift) == _normSlot(slot) && !e.isSpecialWork && !e.isOfficeWork)
+          .length;
+      if (count == 1) {
+        ps1 += 1;
+        workTime += 1.5;
+        PdfGenerator.ps1add += 1;
+        PdfGenerator.workTimeadd += 1.5;
+      } else if (count == 2) {
+        ps2 += 1;
+        workTime += 1.5;
+        PdfGenerator.ps2add += 1;
+        PdfGenerator.workTimeadd += 1.5;
+      }
     }
 
   return pw.TableRow(
@@ -110,46 +152,32 @@ class PdfGenerator {
       pw.Text('$month/$day', textAlign: pw.TextAlign.center, style: pw.TextStyle(font: jpFont, fontSize: 10)),
       pw.Text(weekday, textAlign: pw.TextAlign.center, style: pw.TextStyle(font: jpFont, fontSize: 10)),
       pw.Text('', textAlign: pw.TextAlign.center, style: pw.TextStyle(font: jpFont, fontSize: 10)),
-      pw.Column(
-      // Aコマの担当者を縦にリスト表示
+      // --- dynamic timeslot columns ---
+      ...slots.map((slot) => pw.Column(
         children: [
-          for (var e in entriesForDate.where((e) => e.timeshift == 'A(17:00～18:30)'))
+          for (var e in entriesForDate.where((e) => _normSlot(e.timeshift) == _normSlot(slot)))
             pw.Text(
               e.studentName,
               textAlign: pw.TextAlign.center,
               style: pw.TextStyle(font: jpFont, fontSize: 10),
             ),
         ],
-      ),
-      pw.Column(
-      // Bコマの担当者を縦にリスト表示
-        children: [
-          for (var e in entriesForDate.where((e) => e.timeshift == 'B(18:40～20:10)'))
-            pw.Text(
-              e.studentName,
-              textAlign: pw.TextAlign.center,
-              style: pw.TextStyle(font: jpFont, fontSize: 10),
-            ),
-        ],
-      ),
-      pw.Column(
-      // Cコマの担当者を縦にリスト表示
-        children: [
-          for (var e in entriesForDate.where((e) => e.timeshift == 'C(20:20～21:50)'))
-            pw.Text(
-              e.studentName,
-              textAlign: pw.TextAlign.center,
-              style: pw.TextStyle(font: jpFont, fontSize: 10),
-            ),
-        ],
-      ),
+      )),
       pw.Text(ps1.toString(), textAlign: pw.TextAlign.center, style: pw.TextStyle(font: jpFont, fontSize: 10)),
       pw.Text(ps2.toString(), textAlign: pw.TextAlign.center, style: pw.TextStyle(font: jpFont, fontSize: 10)),
-      pw.Text('', textAlign: pw.TextAlign.center, style: pw.TextStyle(font: jpFont, fontSize: 10)),
-      pw.Text('', textAlign: pw.TextAlign.center, style: pw.TextStyle(font: jpFont, fontSize: 10)),
-      pw.Text('', textAlign: pw.TextAlign.center, style: pw.TextStyle(font: jpFont, fontSize: 8)),
-      pw.Text('', textAlign: pw.TextAlign.center, style: pw.TextStyle(font: jpFont, fontSize: 8)),
-      pw.Text('', textAlign: pw.TextAlign.center, style: pw.TextStyle(font: jpFont, fontSize: 8)),
+      pw.Text(syuudann.toString(), textAlign: pw.TextAlign.center, style: pw.TextStyle(font: jpFont, fontSize: 10)),
+      pw.Text(mokutatu.toString(), textAlign: pw.TextAlign.center, style: pw.TextStyle(font: jpFont, fontSize: 10)),
+      pw.Text(omc.toString(), textAlign: pw.TextAlign.center, style: pw.TextStyle(font: jpFont, fontSize: 8)),
+      pw.Text(kousyuu.toString(), textAlign: pw.TextAlign.center, style: pw.TextStyle(font: jpFont, fontSize: 8)),
+      pw.Column(
+        children: [
+          for (var e in entriesForDate.where((e)=>e.isOfficeWork)) ...[
+            pw.Text(e.officework, textAlign: pw.TextAlign.center, style: pw.TextStyle(font: jpFont, fontSize: 8)),
+            pw.Text(e.officeworktimeString, textAlign: pw.TextAlign.center, style: pw.TextStyle(font: jpFont, fontSize: 7)),
+          ],
+          if (officeCount==0) pw.Text('-', textAlign: pw.TextAlign.center, style: pw.TextStyle(font: jpFont, fontSize: 8)),
+        ],
+      ),
       pw.Column(
         children: [
           // 総労働時間ラベル(空白でもOK)
@@ -166,11 +194,20 @@ class PdfGenerator {
   static Future<Uint8List> generatePdfBytes(int year, int month, PdfPageFormat format) async {
     // 1) 日本語フォント（あれば）ロード
     await _loadJapaneseFont();
+    // 0) 講師名を読み込む (SharedPreferences に保存されている想定)
+    final prefs = await SharedPreferences.getInstance();
+    final String teacherName = prefs.getString('teacher_name') ?? '';
 
     // リセット集計用カウンタ
     PdfGenerator.ps1add = 0;
     PdfGenerator.ps2add = 0;
     PdfGenerator.workTimeadd = 0.0;
+    PdfGenerator.syuudannadd = 0;
+    PdfGenerator.mokutatuadd = 0;
+    PdfGenerator.omcadd = 0;
+    PdfGenerator.kousyuuadd = 0;
+    PdfGenerator.officeAdd = 0;
+    PdfGenerator.officeHoursAdd = 0.0;
 
     // 2) ドキュメント生成
     final doc = pw.Document();
@@ -194,39 +231,74 @@ class PdfGenerator {
     // 3) 全エントリ取得
     final entries = StudentList.instance.sampleSchedule;
 
+    // 追加時間帯が含まれているか判定 (ABC 以外)
+    final hasExtra = entries.any((e) => !abcSlots.contains(e.timeshift));
+    final activeSlots = hasExtra ? fullSlots : abcSlots;
+
     // Build all day rows
     final dayRows = <pw.TableRow>[];
     for (var i = 1; i <= lastDay; i++) {
-      final row = _buildDayRow(entries, year, month, i, _jpFont!);
+      final row = _buildDayRow(entries, activeSlots, year, month, i, _jpFont!);
       if (row != null) {
         dayRows.add(row);
       }
     }
 
+    // ---- 各時間帯の月次合計を算出 ---------------------------
+    final Map<String,int> slotTotals = {
+      for (final s in activeSlots) s : 0,
+    };
+    for (final e in entries) {
+      final key = activeSlots.firstWhere(
+        (s) => _normSlot(s) == _normSlot(e.timeshift),
+        orElse: () => '',
+      );
+      if (key.isNotEmpty) slotTotals[key] = slotTotals[key]! + 1;
+    }
+
     // 合計行（summary row）を作成
-    final summaryRow = pw.TableRow(
-      children: [
-        pw.Text('合計', textAlign: pw.TextAlign.center, style: pw.TextStyle(font: _jpFont, fontSize: 10)),
-        pw.Text('', textAlign: pw.TextAlign.center, style: pw.TextStyle(font: _jpFont, fontSize: 10, fontWeight: pw.FontWeight.bold)),
-        pw.Text('', textAlign: pw.TextAlign.center, style: pw.TextStyle(font: _jpFont, fontSize: 10)),
-        pw.Text('', textAlign: pw.TextAlign.center, style: pw.TextStyle(font: _jpFont, fontSize: 10)),
-        pw.Text('', textAlign: pw.TextAlign.center, style: pw.TextStyle(font: _jpFont, fontSize: 10)),
-        pw.Text('', textAlign: pw.TextAlign.center, style: pw.TextStyle(font: _jpFont, fontSize: 10)),
-        pw.Text(PdfGenerator.ps1add.toString(), textAlign: pw.TextAlign.center, style: pw.TextStyle(font: _jpFont, fontSize: 10, fontWeight: pw.FontWeight.bold)),
-        pw.Text(PdfGenerator.ps2add.toString(), textAlign: pw.TextAlign.center, style: pw.TextStyle(font: _jpFont, fontSize: 10, fontWeight: pw.FontWeight.bold)),
-        pw.Text('', textAlign: pw.TextAlign.center, style: pw.TextStyle(font: _jpFont, fontSize: 10)),
-        pw.Text('', textAlign: pw.TextAlign.center, style: pw.TextStyle(font: _jpFont, fontSize: 10)),
-        pw.Text('', textAlign: pw.TextAlign.center, style: pw.TextStyle(font: _jpFont, fontSize: 10)),
-        pw.Text('', textAlign: pw.TextAlign.center, style: pw.TextStyle(font: _jpFont, fontSize: 8)),
-        pw.Text('', textAlign: pw.TextAlign.center, style: pw.TextStyle(font: _jpFont, fontSize: 8)),
-        pw.Column(
-          children: [
-            pw.Text('', textAlign: pw.TextAlign.center, style: pw.TextStyle(font: _jpFont, fontSize: 8)),
-            pw.Text(PdfGenerator.workTimeadd.toString(), textAlign: pw.TextAlign.center, style: pw.TextStyle(font: _jpFont, fontSize: 8, fontWeight: pw.FontWeight.bold)),
-          ],
-        ),
-      ],
-    );
+    final summaryChildren = <pw.Widget>[];
+    // (0) 月/日 列
+    summaryChildren.add(pw.Text('合計', textAlign: pw.TextAlign.center,
+        style: pw.TextStyle(font: _jpFont, fontSize: 10)));
+    // (1) 曜列
+    summaryChildren.add(pw.Text('', textAlign: pw.TextAlign.center,
+        style: pw.TextStyle(font: _jpFont, fontSize: 10, fontWeight: pw.FontWeight.bold)));
+    // (2) その他列
+    summaryChildren.add(pw.Text('', textAlign: pw.TextAlign.center,
+        style: pw.TextStyle(font: _jpFont, fontSize: 10)));
+    // (3..n) 動的スロット列
+    // 時間帯列の合計セルは空白にする（合計は PS 列以降で表示）
+    for (final _ in activeSlots) {
+      summaryChildren.add(pw.Text('', textAlign: pw.TextAlign.center,
+          style: pw.TextStyle(font: _jpFont, fontSize: 10)));
+    }
+    // PS1
+    summaryChildren.add(pw.Text(PdfGenerator.ps1add.toString(), textAlign: pw.TextAlign.center,
+        style: pw.TextStyle(font: _jpFont, fontSize: 10, fontWeight: pw.FontWeight.bold)));
+    // PS2
+    summaryChildren.add(pw.Text(PdfGenerator.ps2add.toString(), textAlign: pw.TextAlign.center,
+        style: pw.TextStyle(font: _jpFont, fontSize: 10, fontWeight: pw.FontWeight.bold)));
+    // 特別業務列
+    summaryChildren.add(pw.Text(PdfGenerator.syuudannadd.toString(), textAlign: pw.TextAlign.center,
+        style: pw.TextStyle(font: _jpFont, fontSize: 10, fontWeight: pw.FontWeight.bold)));
+    summaryChildren.add(pw.Text(PdfGenerator.mokutatuadd.toString(), textAlign: pw.TextAlign.center,
+        style: pw.TextStyle(font: _jpFont, fontSize: 10, fontWeight: pw.FontWeight.bold)));
+    summaryChildren.add(pw.Text(PdfGenerator.omcadd.toString(), textAlign: pw.TextAlign.center,
+        style: pw.TextStyle(font: _jpFont, fontSize: 10, fontWeight: pw.FontWeight.bold)));
+    summaryChildren.add(pw.Text(PdfGenerator.kousyuuadd.toString(), textAlign: pw.TextAlign.center,
+        style: pw.TextStyle(font: _jpFont, fontSize: 8, fontWeight: pw.FontWeight.bold)));
+    // 事務作業列 (時間のみ)
+    summaryChildren.add(pw.Text(PdfGenerator.officeHoursAdd.toStringAsFixed(1), textAlign: pw.TextAlign.center,
+        style: pw.TextStyle(font: _jpFont, fontSize: 8, fontWeight: pw.FontWeight.bold)));
+    // 勤務時間合計列
+    summaryChildren.add(pw.Column(children:[
+      pw.Text('', textAlign: pw.TextAlign.center, style: pw.TextStyle(font: _jpFont, fontSize: 8)),
+      pw.Text(PdfGenerator.workTimeadd.toString(), textAlign: pw.TextAlign.center,
+          style: pw.TextStyle(font: _jpFont, fontSize: 8, fontWeight: pw.FontWeight.bold)),
+    ]));
+
+    final summaryRow = pw.TableRow(children: summaryChildren);
 
   // 4) ページを追加
   doc.addPage(pw.Page(
@@ -236,21 +308,36 @@ class PdfGenerator {
       return pw.Column(
         crossAxisAlignment: pw.CrossAxisAlignment.start,
         children: [
-          // タイトル
-          pw.Text(
-            '$year年$month月 シフト表',
-            style: pw.TextStyle(font: _jpFont, fontSize: 20, fontWeight: pw.FontWeight.bold),
+          // タイトルと講師名（右上に配置）
+          pw.Row(
+            mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+            children: [
+              pw.Text(
+                '$year年$month月 シフト表',
+                style: pw.TextStyle(font: _jpFont, fontSize: 20, fontWeight: pw.FontWeight.bold),
+              ),
+              if (teacherName.isNotEmpty)
+                pw.Text(
+                  teacherName,
+                  style: pw.TextStyle(font: _jpFont, fontSize: 14),
+                ),
+            ],
           ),
           pw.SizedBox(height: 12),
 
           // テーブル本体
           pw.Table(
             border: pw.TableBorder.all(color: PdfColors.grey),
-            columnWidths: {
-              // 0列目（時間帯）は幅固定、あとは均等
-              for (var i = 1; i <= 13; i++)
-                i: const pw.FlexColumnWidth(1),
-            },
+            columnWidths: () {
+              // 動的スロット数に応じて列総数を決定
+              final totalCols = 3                       // 月/日・曜・その他
+                              + activeSlots.length     // 授業枠列
+                              + 8;                     // PS1,PS2,集団,目達,OMC,講習準備,事務作業,勤務時間
+              return {
+                // index0 は自動幅（Date 列）。他は均等幅 = Flex(1)
+                for (var i = 1; i < totalCols; i++) i: const pw.FlexColumnWidth(1),
+              };
+            }(),
             children: [
               // ─── ヘッダ行 ──────────────────────────────
               pw.TableRow(
@@ -281,66 +368,40 @@ class PdfGenerator {
                       fontSize: 10,
                     ),
                   ),
-                  pw.Column(
-                    children: [
-                      pw.Text(
-                        'Aコマ',
-                        textAlign: pw.TextAlign.center,
-                        style: pw.TextStyle(
-                          font: _jpFont,                     // 日本語フォント
-                          fontSize: 10,
+                  ...activeSlots.map((slot) {
+                    if (slot.contains('(')) {
+                      // A/B/C コマ → 1行目: A など, 2行目: 時間帯
+                      return pw.Column(children:[
+                        pw.Text(
+                          slot.substring(0,1), // A or B or C
+                          textAlign: pw.TextAlign.center,
+                          style: pw.TextStyle(font: _jpFont, fontSize: 10),
                         ),
-                      ),
-                      pw.Text(
-                        '17:00-18:30',
-                        textAlign: pw.TextAlign.center,
-                        style: pw.TextStyle(
-                          font: _jpFont,                     // 日本語フォント
-                          fontSize: 5,
+                        pw.Text(
+                          slot.replaceAll(RegExp(r'^.\\(|\\)\$'), ''), // 時間帯のみ
+                          textAlign: pw.TextAlign.center,
+                          style: pw.TextStyle(font: _jpFont, fontSize: 8),
                         ),
-                      ),
-                    ],
-                  ),
-                  pw.Column(
-                    children: [
-                      pw.Text(
-                        'Bコマ',
-                        textAlign: pw.TextAlign.center,
-                        style: pw.TextStyle(
-                          font: _jpFont,                     // 日本語フォント
-                          fontSize: 10,
+                      ]);
+                    } else {
+                      // 通常時間帯 → 1行目: 開始時刻~、2行目: 終了時刻
+                      final parts = slot.split('-');
+                      final start = parts.first.trim();
+                      final end   = parts.length > 1 ? parts.last.trim() : '';
+                      return pw.Column(children:[
+                        pw.Text(
+                          '$start~',
+                          textAlign: pw.TextAlign.center,
+                          style: pw.TextStyle(font: _jpFont, fontSize: 9),
                         ),
-                      ),
-                      pw.Text(
-                        '18:40-20:10',
-                        textAlign: pw.TextAlign.center,
-                        style: pw.TextStyle(
-                          font: _jpFont,                     // 日本語フォント
-                          fontSize: 5,
+                        pw.Text(
+                          end,
+                          textAlign: pw.TextAlign.center,
+                          style: pw.TextStyle(font: _jpFont, fontSize: 9),
                         ),
-                      ),
-                    ],
-                  ),
-                  pw.Column(
-                    children: [
-                      pw.Text(
-                        'Cコマ',
-                        textAlign: pw.TextAlign.center,
-                        style: pw.TextStyle(
-                          font: _jpFont,                     // 日本語フォント
-                          fontSize: 10,
-                        ),
-                      ),
-                      pw.Text(
-                        '20:10-21:50',
-                        textAlign: pw.TextAlign.center,
-                        style: pw.TextStyle(
-                          font: _jpFont,                     // 日本語フォント
-                          fontSize: 5,
-                        ),
-                      ),
-                    ],
-                  ),
+                      ]);
+                    }
+                  }),
                   pw.Text(
                     'PS1',
                     textAlign: pw.TextAlign.center,

@@ -16,6 +16,7 @@ class PdfPreviewScreen extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(title: Text('$year年 $month月 シフト表プレビュー')),
       body: PdfPreview(
+        initialPageFormat: PdfPageFormat.a4.landscape,
         build: (format) => PdfGenerator.generatePdfBytes(year, month, format),
       ),
       floatingActionButton: FloatingActionButton(
@@ -24,7 +25,7 @@ class PdfPreviewScreen extends StatelessWidget {
         onPressed: () async {
             print('▶ PDF保存ボタンが押されました');
             try {
-                final bytes = await PdfGenerator.generatePdfBytes(year, month, PdfPageFormat.a4);
+                final bytes = await PdfGenerator.generatePdfBytes(year, month, PdfPageFormat.a4.landscape);
                 print('  ・バイト列生成 OK (${bytes.length} bytes)');
                 final path = await getSavePath(
                 suggestedName: 'shift_schedule_${year}-${month}.pdf',
