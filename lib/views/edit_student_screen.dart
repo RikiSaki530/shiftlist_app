@@ -1,13 +1,18 @@
 import 'package:flutter/material.dart';
 import '../models/schedule_entry.dart';
-import 'calendar_screen.dart';
+import '../models/student_list.dart';
 
-class AddStudentScreen extends StatefulWidget {
+class EditStudentScreen extends StatefulWidget {
+  final ScheduleEntry student;
+  final DateTime selectedDate; // DateDetailScreen から渡される日付
+
+  const EditStudentScreen({Key? key, required this.student, required this.selectedDate}) : super(key: key);
+
   @override
-  _AddStudentScreenState createState() => _AddStudentScreenState();
+  _EditStudentScreenState createState() => _EditStudentScreenState();
 }
 
-class _AddStudentScreenState extends State<AddStudentScreen> {
+class _EditStudentScreenState extends State<EditStudentScreen> {
   final List<String> grades = ['小1','小2','小3','小4','小5','小6','中1', '中2', '中3', '高1', '高2', '高3'];
   final List<String> weekdays = ['月', '火', '水', '木', '金', '土', '日'];
   final List<String> timeshift = [
@@ -27,7 +32,7 @@ class _AddStudentScreenState extends State<AddStudentScreen> {
   final TextEditingController studentNameController = TextEditingController();
   final TextEditingController officeWorkContentController = TextEditingController();
   final TextEditingController officeWorkTimeController = TextEditingController();
-  final TextEditingController officeWorkHoursController = TextEditingController(text: '1.5');
+  final TextEditingController officeWorkHoursController = TextEditingController();
   final TextEditingController memoController = TextEditingController();
 
   bool isContinuous = true;
@@ -38,45 +43,45 @@ class _AddStudentScreenState extends State<AddStudentScreen> {
   @override
   void initState() {
     super.initState();
-    selectedGrade = grades.first;
-    selectedWeekday = weekdays.first;
-    selectedtimeshift = timeshift.first;
-    selectedspesialwork = specialwork.first;
-    selectedDate = DateTime.now();
+    studentNameController.text = widget.student.studentName;
+    selectedGrade = widget.student.grade.isNotEmpty ? widget.student.grade : grades.first;
+    selectedWeekday = widget.student.weekday.isNotEmpty ? widget.student.weekday : weekdays.first;
+    selectedtimeshift = widget.student.timeshift.isNotEmpty ? widget.student.timeshift : timeshift.first;
+    isContinuous = widget.student.continuous;
+    isSpecialWork = widget.student.isSpecialWork;
+    selectedspesialwork = widget.student.specialwork.isNotEmpty ? widget.student.specialwork : specialwork.first;
+    isOfficeWork = widget.student.isOfficeWork;
+    officeWorkContentController.text = widget.student.officework;
+    officeWorkTimeController.text = widget.student.officeworktimeString;
+    officeWorkHoursController.text = widget.student.officeworktime.toString();
+    selectedDate = widget.selectedDate; // DateDetailScreen から渡された日付を使用
   }
 
-  void saveEntry() {
-    // ===== Business‑logic mapping based on current mode =====
+  void saveChanges() {
     final bool entryIsOffice = isOfficeWork;
 
-    // 1) Student name
     final String entryStudentName = entryIsOffice
-        ? officeWorkContentController.text.trim() // use the office work content as the "name"
+        ? officeWorkContentController.text.trim()
         : (isSpecialWork && selectedspesialwork == '集団'
             ? '集団'
             : studentNameController.text.trim());
 
-    // 2) Grade (null equivalent → empty string)
     final String entryGrade = entryIsOffice ? '' : selectedGrade;
 
-    // 2) Weekday: if office work, derive from selectedDate
     final String entryWeekday = entryIsOffice
         ? weekdays[selectedDate.weekday - 1]
         : selectedWeekday;
 
-    // 3) Timeshift
-    // Office work entries should have a fixed timeshift label "事務"
     final String entryTimeshift = entryIsOffice ? '事務' : selectedtimeshift;
 
-    // 4) Repetition
     final bool entryContinuous = entryIsOffice ? false : isContinuous;
 
-    // 5) Date handling
-    final int entryDay  = entryIsOffice ? selectedDate.day : (entryContinuous ? 0 : selectedDate.day);
+    final int entryDay = entryIsOffice ? selectedDate.day : (entryContinuous ? 0 : selectedDate.day);
     final int entryMonth = entryIsOffice ? selectedDate.month : (entryContinuous ? 0 : selectedDate.month);
-    final int entryYear = entryIsOffice ? selectedDate.year : (entryContinuous ? 0 : selectedDate.year); // year を追加
+    final int entryYear = entryIsOffice ? selectedDate.year : (entryContinuous ? 0 : selectedDate.year);
 
-    final newEntry = ScheduleEntry(
+    final updatedEntry = ScheduleEntry(
+      id: widget.student.id,
       studentName: entryStudentName,
       grade: entryGrade,
       weekday: entryWeekday,
@@ -84,17 +89,82 @@ class _AddStudentScreenState extends State<AddStudentScreen> {
       continuous: entryContinuous,
       day: entryDay,
       month: entryMonth,
-      year: entryYear, // year を追加
+      year: entryYear,
       isSpecialWork: isSpecialWork,
       specialwork: isSpecialWork ? selectedspesialwork : '',
       isOfficeWork: entryIsOffice,
       officework: entryIsOffice ? officeWorkContentController.text.trim() : '',
       officeworktimeString: entryIsOffice ? officeWorkTimeController.text.trim() : '',
       officeworktime: entryIsOffice ? double.tryParse(officeWorkHoursController.text.trim()) ?? 0.0 : 0.0,
-      ownerId: "user1234",
+      ownerId: widget.student.ownerId,
+      absentDates: widget.student.absentDates, // 既存の欠席日リストを保持
     );
-    // TODO: Implement saving logic for newEntry
-    Navigator.pop(context, newEntry);
+
+    StudentList.instance.updateStudent(updatedEntry);
+    Navigator.pop(context);
+  }
+
+  void _showAbsenceDialog() {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: Text('欠席の確認'),
+          content: Text('この日のシフトを欠席としてマークしますか？（リストからは消えません）'),
+          actions: <Widget>[
+            TextButton(
+              child: Text('キャンセル'),
+              onPressed: () {
+                Navigator.of(context).pop();
+              },
+            ),
+            TextButton(
+              child: Text('この日だけ欠席'),
+              onPressed: () {
+                StudentList.instance.markAsAbsent(widget.student.id, widget.selectedDate);
+                Navigator.of(context).pop(); // Close the dialog
+                Navigator.of(context).pop(); // Go back to the previous screen
+              },
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _showDeleteAllDialog() {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: Text('全シフト削除の確認'),
+          content: Text(
+            '「${widget.student.studentName}」さんの今後のシフトを全て削除します。この操作は元に戻せません。よろしいですか？',
+            style: TextStyle(color: Colors.red),
+          ),
+          actions: <Widget>[
+            TextButton(
+              child: Text('キャンセル'),
+              onPressed: () {
+                Navigator.of(context).pop();
+              },
+            ),
+            TextButton(
+              child: Text('全て削除', style: TextStyle(color: Colors.red)),
+              onPressed: () {
+                StudentList.instance.deleteAllEntriesForStudent(
+                  widget.student.studentName,
+                  widget.student.grade,
+                  DateTime.now(), // 現在の日付を渡す
+                );
+                Navigator.of(context).pop(); // Close the dialog
+                Navigator.of(context).pop(); // Go back to the previous screen
+              },
+            ),
+          ],
+        );
+      },
+    );
   }
 
   @override
@@ -111,13 +181,12 @@ class _AddStudentScreenState extends State<AddStudentScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('新しいシフト追加'),
+        title: const Text('シフトの編集'),
       ),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
         child: ListView(
           children: [
-            // モード切替：OFF = 通常入力, ON = 事務作業入力
             SwitchListTile(
               title: const Text('事務作業モード'),
               value: isOfficeWork,
@@ -202,7 +271,6 @@ class _AddStudentScreenState extends State<AddStudentScreen> {
             ),
 
             if (!isOfficeWork) ...[
-              // Toggle for special work
               SwitchListTile(
                 title: const Text('特別な仕事'),
                 value: isSpecialWork,
@@ -213,7 +281,6 @@ class _AddStudentScreenState extends State<AddStudentScreen> {
                 },
               ),
 
-              // If special work, show dropdown for special work type
               if (isSpecialWork)
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: 8.0),
@@ -260,7 +327,6 @@ class _AddStudentScreenState extends State<AddStudentScreen> {
               const SizedBox(height: 16),
             ],
 
-            // Toggle for single vs weekly
             Visibility(
               visible: !isOfficeWork,
               child: SwitchListTile(
@@ -274,7 +340,6 @@ class _AddStudentScreenState extends State<AddStudentScreen> {
               ),
             ),
 
-            // If single occurrence or office work, show date picker tile
             if (!isContinuous || isOfficeWork)
               ListTile(
                 title: const Text('日付を選択'),
@@ -305,11 +370,27 @@ class _AddStudentScreenState extends State<AddStudentScreen> {
               ),
               maxLines: 3,
             ),
+            const SizedBox(height: 24),
+            ElevatedButton(
+              onPressed: _showAbsenceDialog,
+              child: Text('この日だけ欠席にする'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.orange,
+              ),
+            ),
+            const SizedBox(height: 12),
+            ElevatedButton(
+              onPressed: _showDeleteAllDialog,
+              child: Text('今後のシフトを全て削除'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red,
+              ),
+            ),
           ],
         ),
       ),
       floatingActionButton: FloatingActionButton(
-        onPressed: saveEntry,
+        onPressed: saveChanges,
         child: const Icon(Icons.save),
       ),
     );
